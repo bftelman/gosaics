@@ -108,3 +108,43 @@ func TestRecoverPanic_PassesThroughNormalResponses(t *testing.T) {
 		t.Errorf("got body %q, want %q", rec.Body.String(), "fine")
 	}
 }
+
+func TestRecoverPanic_DoesNotCorruptCommittedResponse(t *testing.T) {
+	// A handler that panics mid-stream must leave the already-sent status and
+	// body intact rather than having an error body appended to it.
+	streaming := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial-image-bytes"))
+		panic("boom mid-stream")
+	})
+
+	rec := httptest.NewRecorder()
+	recoverPanic(streaming).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want the already-committed 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "partial-image-bytes" {
+		t.Errorf("committed body was appended to: %q", body)
+	}
+}
+
+func TestRecoverPanic_PropagatesErrAbortHandler(t *testing.T) {
+	// ErrAbortHandler must keep propagating so the stdlib can drop the
+	// connection silently instead of it becoming a 500.
+	aborting := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
+
+	defer func() {
+		if recovered := recover(); recovered != http.ErrAbortHandler {
+			t.Errorf("got panic value %v, want http.ErrAbortHandler", recovered)
+		}
+	}()
+
+	rec := httptest.NewRecorder()
+	recoverPanic(aborting).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	t.Fatal("ServeHTTP returned normally, want the panic to propagate")
+}
