@@ -46,6 +46,27 @@ func solidPNG(t *testing.T, w, h int, c color.RGBA) []byte {
 	return buf.Bytes()
 }
 
+// halfJPEG returns the JPEG bytes of a w x h image whose left half is left and
+// right half is right.
+func halfJPEG(t *testing.T, w, h int, left, right color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := left
+			if x >= w/2 {
+				c = right
+			}
+			img.SetRGBA(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatalf("encoding JPEG fixture: %v", err)
+	}
+	return buf.Bytes()
+}
+
 type filePart struct {
 	field    string
 	filename string
