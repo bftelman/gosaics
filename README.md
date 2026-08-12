@@ -25,8 +25,8 @@ go build -o gosaics .
 ```
 
 gosaics starts on <http://localhost:8080> (the next free port if that one is
-taken) and opens your browser automatically. If it can't, the URL is printed to
-the terminal.
+taken) and prints the URL, then tries to open your browser for you. If it can't,
+open the printed URL yourself.
 
 ## Use it
 

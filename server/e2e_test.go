@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"image/color"
 	"image/jpeg"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -70,13 +72,42 @@ func TestEndToEnd_ServesUIThroughRealServer(t *testing.T) {
 	srv := httptest.NewServer(New())
 	defer srv.Close()
 
-	res, err := http.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("getting index: %v", err)
+	tests := []struct {
+		name        string
+		path        string
+		wantContent string
+		wantType    string
+	}{
+		{"index", "/", "gosaics", "text/html"},
+		{"script", "/app.js", "api/generate", "text/javascript"},
+		{"styles", "/styles.css", "--accent", "text/css"},
 	}
-	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
-		t.Errorf("got status %d, want 200", res.StatusCode)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := http.Get(srv.URL + tt.path)
+			if err != nil {
+				t.Fatalf("getting %s: %v", tt.path, err)
+			}
+			defer res.Body.Close()
+
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("got status %d, want 200", res.StatusCode)
+			}
+
+			body, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatalf("reading body: %v", err)
+			}
+			if !strings.Contains(string(body), tt.wantContent) {
+				t.Errorf("%s body does not contain %q", tt.path, tt.wantContent)
+			}
+
+			// Content type is sniffed/derived by the file server, so only the
+			// leading media type is asserted, not the charset suffix.
+			if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, tt.wantType) {
+				t.Errorf("%s served as %q, want a %q content type", tt.path, ct, tt.wantType)
+			}
+		})
 	}
 }
