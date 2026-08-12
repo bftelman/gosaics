@@ -13,6 +13,7 @@ func TestFS_ContainsExpectedAssets(t *testing.T) {
 		"styles.css",
 		"app.js",
 		"strings.en.json",
+		"favicon.svg",
 	}
 
 	for _, name := range wantFiles {
