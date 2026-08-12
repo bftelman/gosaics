@@ -123,9 +123,9 @@ body {
 .brand-mark {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
-  background:
-    conic-gradient(from 45deg, var(--accent) 0 25%, #d6608b 0 50%, #4fb0a5 0 75%, #d8a13c 0);
+  /* The favicon is the single source of truth for the mark, so the header and
+     the browser tab can never drift apart. */
+  background: url("favicon.svg") center / contain no-repeat;
 }
 
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
