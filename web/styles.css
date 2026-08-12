@@ -66,6 +66,13 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute must beat any author display rule below (.progress and
+   .preview both set display:flex, which would otherwise override the UA
+   stylesheet's [hidden] { display: none } and render them anyway). */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   padding: 0;
