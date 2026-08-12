@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gosaics</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1 data-i18n="app.title">gosaics</h1>
+    </div>
+
+    <div class="topbar-actions">
+      <label class="visually-hidden" for="language" data-i18n="language.label">Language</label>
+      <select id="language" class="control-select">
+        <option value="en">English</option>
+      </select>
+
+      <button id="theme-toggle" class="icon-button" type="button" data-i18n-title="theme.toggle" title="Toggle dark mode">
+        <span class="theme-icon" aria-hidden="true"></span>
+      </button>
+
+      <button id="help-open" class="icon-button" type="button" data-i18n-title="help.open" title="Help">?</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <p class="tagline" data-i18n="app.tagline">Turn one photo into a mosaic of many</p>
+
+    <section class="dropzones">
+      <div class="dropzone" id="drop-input" tabindex="0" role="button">
+        <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+        <h2 data-i18n="drop.input.title">Input photo</h2>
+        <p class="hint" data-i18n="drop.input.hint">Drop a JPEG or PNG here, or click to browse</p>
+        <div class="preview" id="input-preview" hidden>
+          <img id="input-thumb" alt="">
+          <span id="input-name" class="filename"></span>
+        </div>
+      </div>
+
+      <div class="dropzone" id="drop-tiles" tabindex="0" role="button">
+        <input type="file" id="file-tiles" accept="image/jpeg,image/png" multiple webkitdirectory hidden>
+        <h2 data-i18n="drop.tiles.title">Tile photos</h2>
+        <p class="hint" data-i18n="drop.tiles.hint">Drop a folder of photos here, or click to browse</p>
+        <div class="preview" id="tiles-preview" hidden>
+          <div class="tile-strip" id="tiles-strip"></div>
+          <span id="tiles-count" class="filename"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <div class="control-group">
+        <label for="grid-size" data-i18n="control.gridSize">Grid size</label>
+        <input type="number" id="grid-size" class="control-number" min="2" max="300" step="1" value="50">
+        <span class="hint" data-i18n="control.gridSizeHint">Higher means more, smaller tiles</span>
+      </div>
+
+      <button id="generate" class="primary-button" type="button" disabled data-i18n="control.generate">
+        Generate mosaic
+      </button>
+    </section>
+
+    <p id="error" class="error" role="alert" hidden></p>
+
+    <section id="progress" class="progress" hidden aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="progress-text" data-i18n="control.generating">Generating…</span>
+    </section>
+
+    <section id="result" class="result" hidden>
+      <h2 data-i18n="result.title">Your mosaic</h2>
+      <img id="result-image" alt="">
+      <div class="result-actions">
+        <a id="download" class="primary-button" download="mosaic.jpg" data-i18n="result.download">Download mosaic</a>
+        <button id="reset" class="ghost-button" type="button" data-i18n="control.reset">Start over</button>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="help-dialog" class="help-dialog">
+    <h2 data-i18n="help.title">How it works</h2>
+    <p data-i18n="help.body"></p>
+    <button id="help-close" class="primary-button" type="button" data-i18n="help.close">Got it</button>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
