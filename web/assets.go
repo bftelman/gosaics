@@ -6,5 +6,5 @@ import "embed"
 
 // FS contains every static asset served to the browser.
 //
-//go:embed index.html styles.css app.js strings.en.json favicon.svg
+//go:embed index.html styles.css app.js strings.en.json strings.ru.json strings.az.json favicon.svg
 var FS embed.FS
