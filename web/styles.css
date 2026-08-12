@@ -398,3 +398,80 @@ body {
 .help-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
 .help-dialog h2 { margin: 0 0 10px; font-size: 17px; }
 .help-dialog p { margin: 0 0 18px; color: var(--text-muted); }
+
+/* ---------- small screens ---------- */
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+
+  .brand h1 { font-size: 16px; }
+
+  .topbar-actions { gap: 6px; }
+
+  /* 16px is the threshold below which iOS Safari zooms the page when a field
+     takes focus, which then leaves the layout scrolled sideways. */
+  .control-select,
+  .control-number {
+    font-size: 16px;
+  }
+
+  .control-select {
+    max-width: 9rem;
+    padding: 8px 6px;
+  }
+
+  /* Comfortable touch targets. */
+  .icon-button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .layout { padding: 20px 14px 48px; }
+
+  .tagline {
+    margin-bottom: 20px;
+    font-size: 15px;
+  }
+
+  .dropzones {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .dropzone {
+    min-height: 148px;
+    padding: 22px 16px;
+  }
+
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .control-group {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+
+  .control-number { width: 100%; }
+
+  .primary-button,
+  .ghost-button {
+    width: 100%;
+    padding: 13px 18px;
+  }
+
+  .result { padding: 16px; }
+
+  .result-actions { flex-direction: column; }
+
+  .help-dialog {
+    width: calc(100% - 28px);
+    padding: 20px;
+  }
+}
