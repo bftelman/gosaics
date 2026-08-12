@@ -181,5 +181,6 @@ Plain HTML/CSS/JS, no framework, no build step — embedded directly.
 - `github.com/bftelman/gosaics`, public, MIT license.
 - Standard `go.mod`, Go 1.26.
 - `.gitignore` for build artifacts (`/gosaics`, `/bin/`, etc.) and OS/editor cruft.
-- `README.md` covering: what it is, how to build/run (`go run .` or `go build`), a short usage
-  walkthrough, and a credit line back to the original `mosaics` project.
+- `README.md` covering: what it is, how to build/run (`go run .` or `go build`), and a short usage
+  walkthrough. It presents gosaics as its own tool — no mention of it being a port or rewrite of another
+  project.
