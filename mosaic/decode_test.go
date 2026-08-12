@@ -90,3 +90,24 @@ func TestEncodeJPEG_RoundTrips(t *testing.T) {
 		t.Errorf("round-tripped average %+v, want near {123 45 67}", avg)
 	}
 }
+
+func TestDecode_TruncatedValidFormatIsNotUnsupportedFormat(t *testing.T) {
+	// A file with real JPEG magic bytes that is then cut short must be
+	// reported as a decode failure, NOT as an unsupported format. Callers
+	// branch on this distinction to tell a corrupt upload from a wrong one.
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, solidImage(32, 32, color.RGBA{200, 100, 50, 255}), nil); err != nil {
+		t.Fatalf("encoding fixture failed: %v", err)
+	}
+
+	full := buf.Bytes()
+	truncated := full[:len(full)/2]
+
+	_, err := Decode(bytes.NewReader(truncated))
+	if err == nil {
+		t.Fatal("Decode accepted a truncated JPEG, want an error")
+	}
+	if errors.Is(err, ErrUnsupportedFormat) {
+		t.Errorf("truncated JPEG reported as ErrUnsupportedFormat; want a wrapped decode error, got %v", err)
+	}
+}
