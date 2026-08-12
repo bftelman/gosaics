@@ -3,7 +3,6 @@
   "app.tagline": "Turn one photo into a mosaic of many",
   "drop.input.title": "Input photo",
   "drop.input.hint": "Drop a JPEG or PNG here, or click to browse",
-  "drop.input.selected": "Selected",
   "drop.tiles.title": "Tile photos",
   "drop.tiles.hint": "Drop a folder of photos here, or click to browse",
   "drop.tiles.selected": "photos ready",

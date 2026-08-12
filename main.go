@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -42,7 +43,7 @@ func main() {
 		Handler:           server.New(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("gosaics: server stopped: %v", err)
 	}
 }

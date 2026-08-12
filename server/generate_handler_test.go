@@ -147,6 +147,13 @@ func TestGenerateHandler_DefaultsGridSizeWhenAbsent(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got status %d, want 200. body: %s", rec.Code, rec.Body.String())
 	}
+	got, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("response body is not a valid JPEG: %v", err)
+	}
+	if got.Bounds().Dx() != 100 || got.Bounds().Dy() != 100 {
+		t.Errorf("mosaic bounds %v, want 100x100", got.Bounds())
+	}
 }
 
 func TestGenerateHandler_SkipsUndecodableTiles(t *testing.T) {
