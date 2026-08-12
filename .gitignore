@@ -15,3 +15,6 @@ Thumbs.db
 
 # SDD scratch workspace
 /.superpowers/
+
+# Local design/planning scratch (not published)
+/docs/superpowers/
