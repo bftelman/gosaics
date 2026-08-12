@@ -73,6 +73,14 @@
   display: none !important;
 }
 
+/* Nothing animates while the page is still starting up: transitions during
+   load read as a flash, not as motion. The class is removed once loaded. */
+.preload *,
+.preload *::before,
+.preload *::after {
+  transition: none !important;
+}
+
 body {
   margin: 0;
   padding: 0;

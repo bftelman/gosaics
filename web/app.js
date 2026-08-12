@@ -351,6 +351,11 @@ function reset() {
 /* ---------------- init ---------------- */
 
 function init() {
+  // Re-enable transitions only after everything has loaded and painted.
+  window.addEventListener("load", () => {
+    document.documentElement.classList.remove("preload");
+  });
+
   initTheme();
 
   wireDropzone(el("drop-input"), el("file-input"), (files) => {
