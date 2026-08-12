@@ -12,6 +12,8 @@ const state = {
   tileFiles: [],
   strings: {},
   resultURL: null,
+  inputURL: null,
+  tileURLs: [],
 };
 
 const el = (id) => document.getElementById(id);
@@ -166,13 +168,21 @@ function renderInputPreview() {
   const preview = el("input-preview");
   const zone = el("drop-input");
 
+  // Release the previous preview URL first: this runs on every file change
+  // and on every language switch, so re-creating without revoking leaks.
+  if (state.inputURL) {
+    URL.revokeObjectURL(state.inputURL);
+    state.inputURL = null;
+  }
+
   if (!state.inputFile) {
     preview.hidden = true;
     zone.classList.remove("filled");
     return;
   }
 
-  el("input-thumb").src = URL.createObjectURL(state.inputFile);
+  state.inputURL = URL.createObjectURL(state.inputFile);
+  el("input-thumb").src = state.inputURL;
   el("input-name").textContent = state.inputFile.name;
   preview.hidden = false;
   zone.classList.add("filled");
@@ -183,6 +193,13 @@ function renderTilesPreview() {
   const zone = el("drop-tiles");
   const strip = el("tiles-strip");
 
+  // Same reasoning as renderInputPreview: revoke the previous thumbnail URLs
+  // before building a new strip.
+  for (const url of state.tileURLs) {
+    URL.revokeObjectURL(url);
+  }
+  state.tileURLs = [];
+
   if (state.tileFiles.length === 0) {
     preview.hidden = true;
     zone.classList.remove("filled");
@@ -191,8 +208,10 @@ function renderTilesPreview() {
   }
 
   const thumbs = state.tileFiles.slice(0, MAX_TILE_THUMBS).map((file) => {
+    const url = URL.createObjectURL(file);
+    state.tileURLs.push(url);
     const img = document.createElement("img");
-    img.src = URL.createObjectURL(file);
+    img.src = url;
     img.alt = "";
     return img;
   });
