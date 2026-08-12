@@ -292,3 +292,75 @@ func TestGenerateHandler_RejectsNonMultipartBody(t *testing.T) {
 		t.Errorf("got status %d, want 400", rec.Code)
 	}
 }
+
+func TestDownscaleTile(t *testing.T) {
+	tests := []struct {
+		name         string
+		w, h, limit  int
+		wantW, wantH int
+	}{
+		{"already small is untouched", 40, 30, 512, 40, 30},
+		{"exactly at limit is untouched", 64, 64, 64, 64, 64},
+		{"landscape shrinks by width", 1000, 500, 100, 100, 50},
+		{"portrait shrinks by height", 500, 1000, 100, 50, 100},
+		{"square shrinks evenly", 800, 800, 200, 200, 200},
+		{"extreme ratio keeps at least one pixel", 5000, 2, 100, 100, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := image.NewRGBA(image.Rect(0, 0, tt.w, tt.h))
+			got := downscaleTile(src, tt.limit).Bounds()
+			if got.Dx() != tt.wantW || got.Dy() != tt.wantH {
+				t.Errorf("got %dx%d, want %dx%d", got.Dx(), got.Dy(), tt.wantW, tt.wantH)
+			}
+		})
+	}
+}
+
+func TestTileSizeLimit(t *testing.T) {
+	tests := []struct {
+		name         string
+		cellW, cellH int
+		want         int
+	}{
+		{"uses the larger side", 40, 25, 40},
+		{"uses the larger side when tall", 25, 40, 40},
+		{"clamped to the ceiling", 4000, 4000, maxTileDimension},
+		{"never below one", 0, 0, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tileSizeLimit(tt.cellW, tt.cellH); got != tt.want {
+				t.Errorf("got %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGenerateHandler_LargeTilesDoNotChangeOutput(t *testing.T) {
+	// A deliberately oversized tile must still produce a correct mosaic: the
+	// handler downscales it on the way in, and the output geometry is driven
+	// by the input photo and grid size, never by tile resolution.
+	parts := []filePart{
+		{"input", "photo.jpg", solidJPEG(t, 100, 100, color.RGBA{10, 200, 90, 255})},
+		{"tiles", "huge.jpg", solidJPEG(t, 1600, 1200, color.RGBA{10, 200, 90, 255})},
+	}
+	req := newMultipartRequest(t, parts, "10")
+	rec := httptest.NewRecorder()
+
+	GenerateHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+
+	got, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("response is not a valid JPEG: %v", err)
+	}
+	if got.Bounds().Dx() != 100 || got.Bounds().Dy() != 100 {
+		t.Errorf("mosaic bounds %v, want 100x100", got.Bounds())
+	}
+}

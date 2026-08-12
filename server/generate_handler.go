@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/bftelman/gosaics/mosaic"
+	"golang.org/x/image/draw"
 )
 
 // maxUploadBytes bounds how much of a multipart upload is buffered in memory
@@ -52,7 +53,8 @@ func GenerateHandler() http.HandlerFunc {
 			return
 		}
 
-		tiles := decodeTiles(r)
+		cellW, cellH := mosaic.CellSize(input.Bounds(), gridSize)
+		tiles := decodeTiles(r, tileSizeLimit(cellW, cellH))
 		if len(tiles) == 0 {
 			writeJSONError(w, http.StatusBadRequest,
 				"No usable tile photos were found. Please drop a folder containing JPEG or PNG images.")
@@ -124,8 +126,10 @@ func decodeInputPhoto(r *http.Request) (image.Image, error) {
 }
 
 // decodeTiles decodes every "tiles" file part, skipping any that fail. A single
-// unreadable file among many should not fail the whole request.
-func decodeTiles(r *http.Request) []image.Image {
+// unreadable file among many should not fail the whole request. Each decoded
+// tile is downscaled to limit before being kept, so the full-resolution image
+// is never retained.
+func decodeTiles(r *http.Request, limit int) []image.Image {
 	if r.MultipartForm == nil {
 		return nil
 	}
@@ -146,10 +150,55 @@ func decodeTiles(r *http.Request) []image.Image {
 			log.Printf("generate: skipping tile %q: %v", header.Filename, err)
 			continue
 		}
-		tiles = append(tiles, img)
+		tiles = append(tiles, downscaleTile(img, limit))
 	}
 
 	return tiles
+}
+
+// maxTileDimension caps how large a decoded tile is kept in memory. Tiles are
+// only ever drawn at one grid cell's size, so anything beyond that is decoded
+// and averaged for nothing. The ceiling keeps a coarse grid over a huge photo
+// (few, very large cells) from pinning hundreds of full-resolution images in
+// memory; at that point mild tile softening is the right trade.
+const maxTileDimension = 512
+
+// downscaleTile shrinks img so neither side exceeds limit, preserving aspect
+// ratio. Images already within the limit are returned untouched.
+func downscaleTile(img image.Image, limit int) image.Image {
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= 0 || h <= 0 || (w <= limit && h <= limit) {
+		return img
+	}
+
+	scale := float64(limit) / float64(w)
+	if h > w {
+		scale = float64(limit) / float64(h)
+	}
+
+	dstW := max(1, int(float64(w)*scale))
+	dstH := max(1, int(float64(h)*scale))
+
+	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Src, nil)
+	return dst
+}
+
+// tileSizeLimit returns how large decoded tiles need to be kept for a mosaic
+// with the given cell dimensions.
+func tileSizeLimit(cellW, cellH int) int {
+	limit := cellW
+	if cellH > limit {
+		limit = cellH
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > maxTileDimension {
+		limit = maxTileDimension
+	}
+	return limit
 }
 
 // writeJSONError sends {"error": "..."} with the given status code.
