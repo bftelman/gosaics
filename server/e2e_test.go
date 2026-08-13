@@ -31,6 +31,12 @@ func TestEndToEnd_GenerateThroughRealServer(t *testing.T) {
 		}
 	}
 
+	// The server streams the upload, so gridSize and input must arrive
+	// before any tile photo.
+	if err := mw.WriteField("gridSize", "12"); err != nil {
+		t.Fatalf("writing gridSize: %v", err)
+	}
+
 	// Input is half red, half blue; tiles cover both so matching has real choices.
 	addFile("input", "photo.jpg", halfJPEG(t, 120, 120,
 		color.RGBA{255, 0, 0, 255}, color.RGBA{0, 0, 255, 255}))
@@ -38,9 +44,6 @@ func TestEndToEnd_GenerateThroughRealServer(t *testing.T) {
 	addFile("tiles", "blue.png", solidPNG(t, 24, 24, color.RGBA{0, 0, 255, 255}))
 	addFile("tiles", "green.jpg", solidJPEG(t, 24, 24, color.RGBA{0, 255, 0, 255}))
 
-	if err := mw.WriteField("gridSize", "12"); err != nil {
-		t.Fatalf("writing gridSize: %v", err)
-	}
 	if err := mw.Close(); err != nil {
 		t.Fatalf("closing multipart writer: %v", err)
 	}

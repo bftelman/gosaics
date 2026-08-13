@@ -285,12 +285,15 @@ async function generate() {
     return;
   }
 
+  // The server streams this upload part by part and cannot rewind, so
+  // gridSize and input must arrive before any tile photo: the tile
+  // downscale limit is derived from both of them.
   const form = new FormData();
+  form.append("gridSize", String(clampGridSize()));
   form.append("input", state.inputFile);
   for (const file of state.tileFiles) {
     form.append("tiles", file);
   }
-  form.append("gridSize", String(clampGridSize()));
 
   el("generate").disabled = true;
   el("result").hidden = true;

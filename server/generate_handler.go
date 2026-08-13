@@ -19,14 +19,20 @@ import (
 	"golang.org/x/image/draw"
 )
 
-// maxUploadBytes bounds how much of a multipart upload is buffered in memory
-// before overflow spills to temporary files. A tile folder can be large, so
-// this is generous.
-const maxUploadBytes = 512 << 20 // 512 MiB
+// maxInputBytes caps how large the input photo part is allowed to be.
+const maxInputBytes = 64 << 20 // 64 MiB
 
-// GenerateHandler handles POST /api/generate: it reads an input photo plus a
-// set of tile photos from a multipart form and responds with the generated
+// GenerateHandler handles POST /api/generate: it streams an input photo plus
+// a set of tile photos from a multipart form and responds with the generated
 // mosaic as JPEG bytes.
+//
+// The upload is read via a streaming multipart.Reader rather than
+// ParseMultipartForm so that the number of tile parts is unbounded (see
+// mime/multipart's 1000-part cap on ReadForm) and memory use does not grow
+// with the size of the upload. Because a multipart stream cannot be rewound,
+// the client MUST send "gridSize" and "input" before any "tiles" parts: the
+// tile downscale limit is derived from the input photo's bounds and the grid
+// size, and both must be known before the first tile is decoded.
 func GenerateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -34,32 +40,132 @@ func GenerateHandler() http.HandlerFunc {
 			return
 		}
 
-		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
-			log.Printf("generate: parsing multipart form: %v", err)
-			writeJSONError(w, http.StatusBadRequest, "Could not read the uploaded files. Please try again.")
+		mr, err := r.MultipartReader()
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest,
+				"Expected a file upload. Please use the gosaics page to submit your photos.")
 			return
 		}
-		defer func() {
-			if r.MultipartForm != nil {
-				// Removes any temporary files the form spilled to disk.
-				_ = r.MultipartForm.RemoveAll()
+
+		var (
+			gridSize    int
+			gridSizeSet bool // an explicit gridSize part has been read
+			input       image.Image
+			collector   *tileCollector
+			tileIndex   int
+		)
+
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
 			}
-		}()
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest,
+					"The upload was interrupted or malformed. Please try again.")
+				return
+			}
 
-		gridSize, err := parseGridSize(r.FormValue("gridSize"))
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, err.Error())
+			switch part.FormName() {
+			case "gridSize":
+				if collector != nil {
+					part.Close()
+					writeJSONError(w, http.StatusBadRequest,
+						"The grid size must be sent before the tile photos.")
+					return
+				}
+
+				raw, err := io.ReadAll(io.LimitReader(part, 32))
+				part.Close()
+				if err != nil {
+					writeJSONError(w, http.StatusBadRequest,
+						"The upload was interrupted or malformed. Please try again.")
+					return
+				}
+
+				size, err := parseGridSize(string(raw))
+				if err != nil {
+					writeJSONError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				gridSize = size
+				gridSizeSet = true
+
+			case "input":
+				if collector != nil {
+					part.Close()
+					writeJSONError(w, http.StatusBadRequest,
+						"The input photo must be sent before the tile photos.")
+					return
+				}
+
+				data, err := io.ReadAll(io.LimitReader(part, maxInputBytes+1))
+				part.Close()
+				if err != nil {
+					writeJSONError(w, http.StatusBadRequest,
+						"The upload was interrupted or malformed. Please try again.")
+					return
+				}
+				if len(data) > maxInputBytes {
+					writeJSONError(w, http.StatusBadRequest,
+						"The input photo is too large. Please use a smaller photo.")
+					return
+				}
+
+				img, err := mosaic.Decode(bytes.NewReader(data))
+				if err != nil {
+					log.Printf("generate: decoding input photo: %v", err)
+					writeJSONError(w, http.StatusBadRequest,
+						"The input photo could not be read. Please use a JPEG or PNG image.")
+					return
+				}
+				input = img
+
+			case "tiles":
+				if input == nil {
+					part.Close()
+					writeJSONError(w, http.StatusBadRequest,
+						"The tile photos arrived before the input photo. Please send the input photo first.")
+					return
+				}
+
+				if collector == nil {
+					if !gridSizeSet {
+						gridSize = mosaic.DefaultGridSize
+					}
+					cellW, cellH := mosaic.CellSize(input.Bounds(), gridSize)
+					collector = newTileCollector(tileSizeLimit(cellW, cellH))
+				}
+
+				data, err := io.ReadAll(io.LimitReader(part, maxTileBytes+1))
+				part.Close()
+				if err != nil {
+					log.Printf("generate: reading tile %q: %v", part.FileName(), err)
+					continue
+				}
+				if len(data) > maxTileBytes {
+					log.Printf("generate: skipping tile %q: exceeds %d byte limit", part.FileName(), maxTileBytes)
+					continue
+				}
+
+				collector.submit(tileIndex, data)
+				tileIndex++
+
+			default:
+				part.Close()
+			}
+		}
+
+		if input == nil {
+			writeJSONError(w, http.StatusBadRequest,
+				"Please choose an input photo to turn into a mosaic.")
 			return
 		}
 
-		input, err := decodeInputPhoto(r)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, err.Error())
-			return
+		var tiles []image.Image
+		if collector != nil {
+			tiles = collector.finish()
 		}
-
-		cellW, cellH := mosaic.CellSize(input.Bounds(), gridSize)
-		tiles := decodeTiles(r, tileSizeLimit(cellW, cellH))
 		if len(tiles) == 0 {
 			writeJSONError(w, http.StatusBadRequest,
 				"No usable tile photos were found. Please drop a folder containing JPEG or PNG images.")
@@ -114,71 +220,17 @@ func gridSizeRangeMessage() string {
 		strconv.Itoa(mosaic.MinGridSize) + " and " + strconv.Itoa(mosaic.MaxGridSize) + "."
 }
 
-// decodeInputPhoto reads and decodes the single "input" file part.
-func decodeInputPhoto(r *http.Request) (image.Image, error) {
-	file, header, err := r.FormFile("input")
-	if err != nil {
-		return nil, errors.New("Please choose an input photo to turn into a mosaic.")
-	}
-	defer file.Close()
-
-	img, err := mosaic.Decode(file)
-	if err != nil {
-		log.Printf("generate: decoding input photo %q: %v", header.Filename, err)
-		return nil, errors.New("The input photo could not be read. Please use a JPEG or PNG image.")
-	}
-	return img, nil
-}
-
 // maxTileBytes caps how large a single tile file is allowed to be. This
 // guards against one absurd upload (an uncompressed TIFF, say) hogging
 // memory or decode time; anything larger is skipped rather than read.
 const maxTileBytes = 64 << 20 // 64 MiB
 
-// decodeTiles decodes every "tiles" file part across a worker pool, skipping
-// any that fail to open, exceed maxTileBytes, or fail to decode. A single
-// unreadable file among many should not fail the whole request. Each decoded
-// tile is downscaled to limit before being kept, so the full-resolution image
-// is never retained. Decoding runs concurrently, but the returned slice
-// preserves the order of the incoming file headers.
-func decodeTiles(r *http.Request, limit int) []image.Image {
-	if r.MultipartForm == nil {
-		return nil
-	}
-
-	headers := r.MultipartForm.File["tiles"]
-	collector := newTileCollector(limit)
-
-	for i, header := range headers {
-		file, err := header.Open()
-		if err != nil {
-			log.Printf("generate: opening tile %q: %v", header.Filename, err)
-			continue
-		}
-
-		data, err := io.ReadAll(io.LimitReader(file, maxTileBytes+1))
-		file.Close()
-		if err != nil {
-			log.Printf("generate: reading tile %q: %v", header.Filename, err)
-			continue
-		}
-		if len(data) > maxTileBytes {
-			log.Printf("generate: skipping tile %q: exceeds %d byte limit", header.Filename, maxTileBytes)
-			continue
-		}
-
-		collector.submit(i, data)
-	}
-
-	return collector.finish()
-}
-
 // tileCollector decodes and downscales tiles concurrently across a worker
 // pool sized to runtime.NumCPU, while preserving the order tiles were
 // submitted in. It is fed raw tile bytes plus an index rather than open
 // files or *multipart.FileHeader, so it can be reused by any caller that
-// only has a stream of []byte (for example a future streaming multipart
-// reader) without change.
+// only has a stream of []byte (for example a streaming multipart reader)
+// without change.
 type tileCollector struct {
 	sizeLimit int // max dimension passed to downscaleTile for each decoded tile
 
