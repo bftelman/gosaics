@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"io"
 	"log"
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/bftelman/gosaics/mosaic"
 	"golang.org/x/image/draw"
@@ -39,6 +42,9 @@ func GenerateHandler() http.HandlerFunc {
 			writeJSONError(w, http.StatusMethodNotAllowed, "This endpoint only accepts POST requests.")
 			return
 		}
+
+		start := time.Now()
+		log.Printf("generate: request started")
 
 		mr, err := r.MultipartReader()
 		if err != nil {
@@ -134,17 +140,23 @@ func GenerateHandler() http.HandlerFunc {
 						gridSize = mosaic.DefaultGridSize
 					}
 					cellW, cellH := mosaic.CellSize(input.Bounds(), gridSize)
-					collector = newTileCollector(tileSizeLimit(cellW, cellH))
+					sizeLimit := tileSizeLimit(cellW, cellH)
+					inputBounds := input.Bounds()
+					log.Printf("generate: input photo %dx%d, grid %d (%dx%d px cells, tiles capped at %d px)",
+						inputBounds.Dx(), inputBounds.Dy(), gridSize, cellW, cellH, sizeLimit)
+					collector = newTileCollector(sizeLimit, tileProgressInterval, start)
 				}
 
 				data, err := io.ReadAll(io.LimitReader(part, maxTileBytes+1))
 				part.Close()
 				if err != nil {
 					log.Printf("generate: reading tile %q: %v", part.FileName(), err)
+					collector.recordSkipped()
 					continue
 				}
 				if len(data) > maxTileBytes {
 					log.Printf("generate: skipping tile %q: exceeds %d byte limit", part.FileName(), maxTileBytes)
+					collector.recordSkipped()
 					continue
 				}
 
@@ -165,12 +177,21 @@ func GenerateHandler() http.HandlerFunc {
 		var tiles []image.Image
 		if collector != nil {
 			tiles = collector.finish()
+			decoded, skipped := collector.counts()
+			if skipped > 0 {
+				log.Printf("generate: decoded %d tiles in %s (%d skipped)",
+					decoded, formatDuration(time.Since(start)), skipped)
+			} else {
+				log.Printf("generate: decoded %d tiles in %s", decoded, formatDuration(time.Since(start)))
+			}
 		}
 		if len(tiles) == 0 {
 			writeJSONError(w, http.StatusBadRequest,
 				"No usable tile photos were found. Please drop a folder containing JPEG or PNG images.")
 			return
 		}
+
+		log.Printf("generate: building mosaic from %d tiles into %d cells", len(tiles), gridSize*gridSize)
 
 		result, err := mosaic.Generate(input, tiles, gridSize)
 		if err != nil {
@@ -192,10 +213,50 @@ func GenerateHandler() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Cache-Control", "no-store")
-		if err := mosaic.EncodeJPEG(w, result); err != nil {
+		cw := &countingWriter{w: w}
+		if err := mosaic.EncodeJPEG(cw, result); err != nil {
 			// The status line is already sent, so this can only be logged.
 			log.Printf("generate: encoding response: %v", err)
+			return
 		}
+
+		resultBounds := result.Bounds()
+		log.Printf("generate: done in %s, %dx%d mosaic, %s",
+			formatDuration(time.Since(start)), resultBounds.Dx(), resultBounds.Dy(), formatBytes(cw.n))
+	}
+}
+
+// countingWriter wraps an http.ResponseWriter to tally how many bytes are
+// written through it, without buffering the response body: bytes are still
+// passed straight through to the underlying writer.
+type countingWriter struct {
+	w http.ResponseWriter
+	n int64
+}
+
+func (cw *countingWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	cw.n += int64(n)
+	return n, err
+}
+
+// formatDuration renders d as seconds with one decimal place (e.g. "58.2s"),
+// which is far more readable in logs than Go's default Duration formatting.
+func formatDuration(d time.Duration) string {
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// formatBytes renders n as a human-readable size (e.g. "2.1 MB").
+func formatBytes(n int64) string {
+	const kb = 1024
+	const mb = kb * 1024
+	switch {
+	case n >= mb:
+		return fmt.Sprintf("%.1f MB", float64(n)/float64(mb))
+	case n >= kb:
+		return fmt.Sprintf("%.1f KB", float64(n)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", n)
 	}
 }
 
@@ -225,6 +286,10 @@ func gridSizeRangeMessage() string {
 // memory or decode time; anything larger is skipped rather than read.
 const maxTileBytes = 64 << 20 // 64 MiB
 
+// tileProgressInterval controls how often tileCollector logs running decode
+// progress: every tileProgressInterval completed tiles.
+const tileProgressInterval = 100
+
 // tileCollector decodes and downscales tiles concurrently across a worker
 // pool sized to runtime.NumCPU, while preserving the order tiles were
 // submitted in. It is fed raw tile bytes plus an index rather than open
@@ -233,9 +298,14 @@ const maxTileBytes = 64 << 20 // 64 MiB
 // without change.
 type tileCollector struct {
 	sizeLimit int // max dimension passed to downscaleTile for each decoded tile
+	interval  int // how often (in completed tiles) to log running progress
+	start     time.Time
 
 	sem chan struct{} // bounds how many decodes run at once (backpressure)
 	wg  sync.WaitGroup
+
+	completed atomic.Int64 // tiles finished (decoded or skipped), for progress logging
+	skipped   atomic.Int64 // tiles that failed to decode, were oversized, or unreadable
 
 	mu    sync.Mutex
 	tiles map[int]image.Image // keyed by submitted index; failures leave gaps
@@ -243,10 +313,14 @@ type tileCollector struct {
 
 // newTileCollector returns a tileCollector that downscales tiles to
 // sizeLimit and decodes them across runtime.NumCPU workers, matching the
-// worker-pool sizing mosaic.Generate already uses.
-func newTileCollector(sizeLimit int) *tileCollector {
+// worker-pool sizing mosaic.Generate already uses. It logs running decode
+// progress every interval completed tiles, with elapsed times measured from
+// start.
+func newTileCollector(sizeLimit, interval int, start time.Time) *tileCollector {
 	return &tileCollector{
 		sizeLimit: sizeLimit,
+		interval:  interval,
+		start:     start,
 		sem:       make(chan struct{}, runtime.NumCPU()),
 		tiles:     make(map[int]image.Image),
 	}
@@ -268,6 +342,8 @@ func (c *tileCollector) submit(index int, data []byte) {
 		img, err := mosaic.Decode(bytes.NewReader(data))
 		if err != nil {
 			log.Printf("generate: skipping tile at index %d: %v", index, err)
+			c.skipped.Add(1)
+			c.recordProgress()
 			return
 		}
 		img = downscaleTile(img, c.sizeLimit)
@@ -275,7 +351,32 @@ func (c *tileCollector) submit(index int, data []byte) {
 		c.mu.Lock()
 		c.tiles[index] = img
 		c.mu.Unlock()
+		c.recordProgress()
 	}()
+}
+
+// recordSkipped counts a tile that never reached submit at all (for example
+// one rejected for being oversized while still streaming in), so it is still
+// reflected in the running progress count and the final skipped tally.
+func (c *tileCollector) recordSkipped() {
+	c.skipped.Add(1)
+	c.recordProgress()
+}
+
+// recordProgress increments the completed-tile counter and, every interval
+// completions, logs the running count and elapsed time since start. It is
+// safe to call from multiple goroutines concurrently.
+func (c *tileCollector) recordProgress() {
+	n := c.completed.Add(1)
+	if c.interval > 0 && n%int64(c.interval) == 0 {
+		log.Printf("generate: decoded %d tiles (%s)", n, formatDuration(time.Since(c.start)))
+	}
+}
+
+// counts returns the total number of tiles processed so far (decoded or
+// skipped) and how many of those were skipped.
+func (c *tileCollector) counts() (completed, skipped int64) {
+	return c.completed.Load(), c.skipped.Load()
 }
 
 // finish waits for every submitted decode to complete and returns the

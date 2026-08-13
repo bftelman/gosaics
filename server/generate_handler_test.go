@@ -7,11 +7,14 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bftelman/gosaics/mosaic"
 )
@@ -445,6 +448,40 @@ func TestGenerateHandler_GridSizeAfterTilesRejected(t *testing.T) {
 	}
 }
 
+func TestGenerateHandler_LogsProgress(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	parts := []filePart{
+		{"input", "photo.jpg", solidJPEG(t, 100, 100, color.RGBA{40, 90, 160, 255})},
+	}
+	for i := 0; i < 250; i++ {
+		v := uint8(i % 256)
+		parts = append(parts, filePart{"tiles", "t.png", solidPNG(t, 4, 4, color.RGBA{v, v, v, 255})})
+	}
+
+	req := newMultipartRequest(t, parts, "10")
+	rec := httptest.NewRecorder()
+
+	GenerateHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+
+	out := logs.String()
+	// 250 tiles at an interval of 100 must produce running progress plus a summary.
+	for _, want := range []string{"100 tiles", "200 tiles", "250 tiles"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output missing %q.\nGot:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "100x100") {
+		t.Errorf("log output does not mention the input photo dimensions.\nGot:\n%s", out)
+	}
+}
+
 func TestDownscaleTile(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -521,7 +558,7 @@ func TestTileCollector_PreservesOrder(t *testing.T) {
 	// Tile order decides tie-breaks in nearest-colour matching, so a
 	// concurrent decoder must still hand tiles back in submission order.
 	const n = 40
-	collector := newTileCollector(64)
+	collector := newTileCollector(64, 0, time.Now())
 	for i := 0; i < n; i++ {
 		// Each tile is a distinct, recognisable grey so position is checkable.
 		v := uint8(i * 5)
@@ -545,7 +582,7 @@ func TestTileCollector_PreservesOrder(t *testing.T) {
 func TestTileCollector_SkipsFailuresAndKeepsOrder(t *testing.T) {
 	// A broken tile in the middle must be dropped without shifting the
 	// relative order of the tiles around it.
-	collector := newTileCollector(64)
+	collector := newTileCollector(64, 0, time.Now())
 	collector.submit(0, solidPNG(t, 8, 8, color.RGBA{10, 10, 10, 255}))
 	collector.submit(1, []byte("not an image"))
 	collector.submit(2, solidPNG(t, 8, 8, color.RGBA{200, 200, 200, 255}))
