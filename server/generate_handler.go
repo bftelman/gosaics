@@ -3,12 +3,17 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"image"
+	"io"
 	"log"
 	"net/http"
+	"runtime"
+	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/bftelman/gosaics/mosaic"
 	"golang.org/x/image/draw"
@@ -125,34 +130,119 @@ func decodeInputPhoto(r *http.Request) (image.Image, error) {
 	return img, nil
 }
 
-// decodeTiles decodes every "tiles" file part, skipping any that fail. A single
+// maxTileBytes caps how large a single tile file is allowed to be. This
+// guards against one absurd upload (an uncompressed TIFF, say) hogging
+// memory or decode time; anything larger is skipped rather than read.
+const maxTileBytes = 64 << 20 // 64 MiB
+
+// decodeTiles decodes every "tiles" file part across a worker pool, skipping
+// any that fail to open, exceed maxTileBytes, or fail to decode. A single
 // unreadable file among many should not fail the whole request. Each decoded
 // tile is downscaled to limit before being kept, so the full-resolution image
-// is never retained.
+// is never retained. Decoding runs concurrently, but the returned slice
+// preserves the order of the incoming file headers.
 func decodeTiles(r *http.Request, limit int) []image.Image {
 	if r.MultipartForm == nil {
 		return nil
 	}
 
 	headers := r.MultipartForm.File["tiles"]
-	tiles := make([]image.Image, 0, len(headers))
+	collector := newTileCollector(limit)
 
-	for _, header := range headers {
+	for i, header := range headers {
 		file, err := header.Open()
 		if err != nil {
 			log.Printf("generate: opening tile %q: %v", header.Filename, err)
 			continue
 		}
 
-		img, err := mosaic.Decode(file)
+		data, err := io.ReadAll(io.LimitReader(file, maxTileBytes+1))
 		file.Close()
 		if err != nil {
-			log.Printf("generate: skipping tile %q: %v", header.Filename, err)
+			log.Printf("generate: reading tile %q: %v", header.Filename, err)
 			continue
 		}
-		tiles = append(tiles, downscaleTile(img, limit))
+		if len(data) > maxTileBytes {
+			log.Printf("generate: skipping tile %q: exceeds %d byte limit", header.Filename, maxTileBytes)
+			continue
+		}
+
+		collector.submit(i, data)
 	}
 
+	return collector.finish()
+}
+
+// tileCollector decodes and downscales tiles concurrently across a worker
+// pool sized to runtime.NumCPU, while preserving the order tiles were
+// submitted in. It is fed raw tile bytes plus an index rather than open
+// files or *multipart.FileHeader, so it can be reused by any caller that
+// only has a stream of []byte (for example a future streaming multipart
+// reader) without change.
+type tileCollector struct {
+	sizeLimit int // max dimension passed to downscaleTile for each decoded tile
+
+	sem chan struct{} // bounds how many decodes run at once (backpressure)
+	wg  sync.WaitGroup
+
+	mu    sync.Mutex
+	tiles map[int]image.Image // keyed by submitted index; failures leave gaps
+}
+
+// newTileCollector returns a tileCollector that downscales tiles to
+// sizeLimit and decodes them across runtime.NumCPU workers, matching the
+// worker-pool sizing mosaic.Generate already uses.
+func newTileCollector(sizeLimit int) *tileCollector {
+	return &tileCollector{
+		sizeLimit: sizeLimit,
+		sem:       make(chan struct{}, runtime.NumCPU()),
+		tiles:     make(map[int]image.Image),
+	}
+}
+
+// submit decodes and downscales data on a pooled goroutine, storing the
+// result under index for later retrieval by finish. It blocks once the pool
+// is saturated, which bounds how many tiles' raw bytes and decoded images
+// can be in flight at once regardless of how many tiles are submitted
+// overall. A decode failure is logged and the index is simply omitted from
+// the result; it is not fatal.
+func (c *tileCollector) submit(index int, data []byte) {
+	c.sem <- struct{}{}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		defer func() { <-c.sem }()
+
+		img, err := mosaic.Decode(bytes.NewReader(data))
+		if err != nil {
+			log.Printf("generate: skipping tile at index %d: %v", index, err)
+			return
+		}
+		img = downscaleTile(img, c.sizeLimit)
+
+		c.mu.Lock()
+		c.tiles[index] = img
+		c.mu.Unlock()
+	}()
+}
+
+// finish waits for every submitted decode to complete and returns the
+// surviving tiles ordered by their submitted index. Indices are not
+// necessarily contiguous, since failed decodes leave gaps; those gaps are
+// skipped rather than represented as nil images.
+func (c *tileCollector) finish() []image.Image {
+	c.wg.Wait()
+
+	indices := make([]int, 0, len(c.tiles))
+	for i := range c.tiles {
+		indices = append(indices, i)
+	}
+	sort.Ints(indices)
+
+	tiles := make([]image.Image, len(indices))
+	for i, idx := range indices {
+		tiles[i] = c.tiles[idx]
+	}
 	return tiles
 }
 

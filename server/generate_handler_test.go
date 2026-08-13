@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -12,6 +13,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/bftelman/gosaics/mosaic"
 )
 
 // solidJPEG returns the JPEG bytes of a w x h image of a single color.
@@ -370,4 +373,70 @@ func TestGenerateHandler_LargeTilesDoNotChangeOutput(t *testing.T) {
 	if got.Bounds().Dx() != 100 || got.Bounds().Dy() != 100 {
 		t.Errorf("mosaic bounds %v, want 100x100", got.Bounds())
 	}
+}
+
+func TestDecodeTiles_PreservesOrder(t *testing.T) {
+	// Tile order decides tie-breaks in nearest-colour matching, so a
+	// concurrent decoder must still hand tiles back in upload order.
+	const n = 40
+	parts := []filePart{
+		{"input", "photo.jpg", solidJPEG(t, 100, 100, color.RGBA{0, 0, 0, 255})},
+	}
+	for i := 0; i < n; i++ {
+		// Each tile is a distinct, recognisable grey so position is checkable.
+		v := uint8(i * 5)
+		parts = append(parts, filePart{"tiles", fmt.Sprintf("t%02d.png", i), solidPNG(t, 8, 8, color.RGBA{v, v, v, 255})})
+	}
+
+	req := newMultipartRequest(t, parts, "10")
+	if err := req.ParseMultipartForm(maxUploadBytes); err != nil {
+		t.Fatalf("parsing form: %v", err)
+	}
+
+	tiles := decodeTiles(req, 64)
+	if len(tiles) != n {
+		t.Fatalf("got %d tiles, want %d", len(tiles), n)
+	}
+
+	for i, tile := range tiles {
+		got := mosaic.AverageRGB(tile)
+		want := float64(uint8(i * 5))
+		if absDiffF(got.R, want) > 2 {
+			t.Errorf("tile %d has average red %.1f, want ~%.0f (order not preserved)", i, got.R, want)
+		}
+	}
+}
+
+func TestDecodeTiles_SkipsFailuresAndKeepsOrder(t *testing.T) {
+	// A broken tile in the middle must be dropped without shifting the
+	// relative order of the tiles around it.
+	parts := []filePart{
+		{"input", "photo.jpg", solidJPEG(t, 100, 100, color.RGBA{0, 0, 0, 255})},
+		{"tiles", "a.png", solidPNG(t, 8, 8, color.RGBA{10, 10, 10, 255})},
+		{"tiles", "broken.png", []byte("not an image")},
+		{"tiles", "c.png", solidPNG(t, 8, 8, color.RGBA{200, 200, 200, 255})},
+	}
+
+	req := newMultipartRequest(t, parts, "10")
+	if err := req.ParseMultipartForm(maxUploadBytes); err != nil {
+		t.Fatalf("parsing form: %v", err)
+	}
+
+	tiles := decodeTiles(req, 64)
+	if len(tiles) != 2 {
+		t.Fatalf("got %d tiles, want 2 (the broken one skipped)", len(tiles))
+	}
+	if first := mosaic.AverageRGB(tiles[0]); absDiffF(first.R, 10) > 2 {
+		t.Errorf("first surviving tile has average red %.1f, want ~10", first.R)
+	}
+	if second := mosaic.AverageRGB(tiles[1]); absDiffF(second.R, 200) > 2 {
+		t.Errorf("second surviving tile has average red %.1f, want ~200", second.R)
+	}
+}
+
+func absDiffF(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
